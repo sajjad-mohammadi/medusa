@@ -30,12 +30,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 #include "module.h"
 
 #define MODULE_NAME    "ssh.mod"
 #define MODULE_AUTHOR  "JoMo-Kun <jmk@foofus.net>"
 #define MODULE_SUMMARY_USAGE  "Brute force module for SSH v2 sessions"
-#define MODULE_VERSION    "2.1"
+#define MODULE_VERSION    "2.2"
 #define MODULE_VERSION_SVN "$Id: ssh.c 9260 2015-05-27 21:52:57Z jmk $"
 #define MODULE_SUMMARY_FORMAT  "%s : version %s"
 #define MODULE_SUMMARY_FORMAT_WARN  "%s : version %s (%s)"
@@ -55,6 +56,7 @@
 
 typedef struct __SSH2_DATA {
   char *szBannerMsg;
+  char *szOutputFile;
   int iConnectionStatus;
 } _SSH2_DATA;
 
@@ -75,6 +77,7 @@ enum MODULE_STATE
 // Forward declarations
 int tryLogin(_SSH2_DATA* _psSessionData, LIBSSH2_SESSION *session, sLogin** login, char* szLogin, char* szPassword);
 int initModule(sLogin* login, _SSH2_DATA *_psSessionData);
+void writeFoundPasswordToFile(_SSH2_DATA *_psSessionData, sLogin *psLogin, const char *szLogin, const char *szPassword);
 
 // Tell medusa how many parameters this module allows
 int getParamNumber()
@@ -107,8 +110,9 @@ void showUsage()
   writeVerbose(VB_NONE, "%s (%s) %s :: %s\n", MODULE_NAME, MODULE_VERSION, MODULE_AUTHOR, MODULE_SUMMARY_USAGE);
   writeVerbose(VB_NONE, "Available module options:");
   writeVerbose(VB_NONE, "  BANNER:? (Libssh client banner. Default SSH-2.0-MEDUSA.)");
+  writeVerbose(VB_NONE, "  OUTPUTFILE:? (Append successful credentials in host:user:password format.)");
   writeVerbose(VB_NONE, "");
-  writeVerbose(VB_NONE, "Usage example: \"-M ssh -m BANNER:SSH-2.0-FOOBAR\"");
+  writeVerbose(VB_NONE, "Usage example: \"-M ssh -m BANNER:SSH-2.0-FOOBAR -m OUTPUTFILE:/tmp/ssh-found.txt\"");
 }
 
 // The "main" of the medusa module world - this is what gets called to actually do the work
@@ -120,7 +124,7 @@ int go(sLogin* logins, int argc, char *argv[])
   psSessionData = malloc(sizeof(_SSH2_DATA));
   memset(psSessionData, 0, sizeof(_SSH2_DATA));
 
-  if ((argc < 0) || (argc > 1))
+  if (argc < 0)
   {
     writeError(ERR_ERROR, "%s: Incorrect number of parameters passed to module (%d). Use \"-q\" option to display module usage.", MODULE_NAME, argc);
     return FAILURE;
@@ -147,6 +151,19 @@ int go(sLogin* logins, int argc, char *argv[])
           writeError(ERR_WARNING, "Method BANNER requires value to be set.");
         }
       }
+      else if (strcmp(pOpt, "OUTPUTFILE") == 0)
+      {
+        pOpt = strtok_r(NULL, "\0", &strtok_ptr);
+
+        if (pOpt)
+        {
+          psSessionData->szOutputFile = strdup(pOpt);
+        }
+        else
+        {
+          writeError(ERR_WARNING, "Method OUTPUTFILE requires value to be set.");
+        }
+      }
       else 
       {
         writeError(ERR_WARNING, "Invalid method: %s.", pOpt);
@@ -158,6 +175,8 @@ int go(sLogin* logins, int argc, char *argv[])
     initModule(logins, psSessionData);
   }  
 
+  FREE(psSessionData->szBannerMsg);
+  FREE(psSessionData->szOutputFile);
   FREE(psSessionData);
   return SUCCESS;
 }
@@ -417,10 +436,16 @@ void response_callback(const char* name, int name_len, const char* instruction, 
       // https://trac.libssh2.org/changeset/fe3e23022b174b796b74afe5633796fc967e02e3/libssh2
       //if ( strcasestr(prompts[i].text, "Password:") != NULL ) {
       if ( ((strcasestr(prompts[i].text, "") != NULL ) && ((prompts[i].length == 9) || (prompts[i].length == 10)) ) || ( strcasestr(prompts[i].text, "Password:") != NULL ) ) {
-        responses[i].text = malloc( strlen(pPass) );
-        memset(responses[i].text, 0, strlen(pPass));
+        size_t nPassLen = 0;
+
+        if (pPass == NULL)
+          pPass = "";
+
+        nPassLen = strlen(pPass);
+        responses[i].text = malloc(nPassLen + 1);
+        memset(responses[i].text, 0, nPassLen + 1);
         strcpy(responses[i].text, pPass);
-        responses[i].length = strlen(pPass);
+        responses[i].length = nPassLen;
         writeError(ERR_DEBUG_MODULE, "libssh2 response_callback set password response: %s", pPass);
         ((_ssh2_session_data*)(*abstract))->iAnswerCount++;
       }
@@ -499,6 +524,7 @@ int tryLogin(_SSH2_DATA* _psSessionData, LIBSSH2_SESSION *session, sLogin** psLo
       else {
         writeError(ERR_DEBUG_MODULE, "Keyboard-Interactive authentication succeeded: Host: %s User: %s Pass: %s", (*psLogin)->psServer->pHostIP, szLogin, szPassword);
         (*psLogin)->iResult = LOGIN_RESULT_SUCCESS;
+        writeFoundPasswordToFile(_psSessionData, *psLogin, szLogin, szPassword);
         iRet = MSTATE_EXITING;
       }
       break;
@@ -515,6 +541,7 @@ int tryLogin(_SSH2_DATA* _psSessionData, LIBSSH2_SESSION *session, sLogin** psLo
       {
         writeError(ERR_DEBUG_MODULE, "Password-based authentication succeeded: Host: %s User: %s Pass: %s", (*psLogin)->psServer->pHostIP, szLogin, szPassword);
         (*psLogin)->iResult = LOGIN_RESULT_SUCCESS;
+        writeFoundPasswordToFile(_psSessionData, *psLogin, szLogin, szPassword);
         iRet = MSTATE_EXITING;
       }
       break;
@@ -528,6 +555,27 @@ int tryLogin(_SSH2_DATA* _psSessionData, LIBSSH2_SESSION *session, sLogin** psLo
   setPassResult((*psLogin), szPassword);
 
   return(iRet);
+}
+
+void writeFoundPasswordToFile(_SSH2_DATA *_psSessionData, sLogin *psLogin, const char *szLogin, const char *szPassword)
+{
+  FILE *pFoundFile = NULL;
+
+  if ((_psSessionData == NULL) || (_psSessionData->szOutputFile == NULL) || (psLogin == NULL) || (szLogin == NULL) || (szPassword == NULL))
+    return;
+
+  pthread_mutex_lock(&ptmFileMutex);
+  pFoundFile = fopen(_psSessionData->szOutputFile, "a");
+  if (pFoundFile == NULL)
+  {
+    writeError(ERR_ERROR, "%s: Failed to open output file %s - %s", MODULE_NAME, _psSessionData->szOutputFile, strerror(errno));
+    pthread_mutex_unlock(&ptmFileMutex);
+    return;
+  }
+
+  fprintf(pFoundFile, "%s:%s:%s\n", psLogin->psServer->pHostIP, szLogin, szPassword);
+  fclose(pFoundFile);
+  pthread_mutex_unlock(&ptmFileMutex);
 }
 
 #else

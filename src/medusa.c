@@ -40,7 +40,9 @@ sAudit *psAudit = NULL;
 int iVerboseLevel;
 int iErrorLevel;
 FILE *pOutputFile;
+FILE *pFoundOutputFile;
 pthread_mutex_t ptmFileMutex;
+pthread_mutex_t ptmFoundFileMutex;
 
 void freeModuleParams()
 {
@@ -69,6 +71,7 @@ void usage()
   writeVerbose(VB_NONE, "  -P [FILE]    : File containing passwords to test");
   writeVerbose(VB_NONE, "  -C [FILE]    : File containing combo entries. See README for more information.");
   writeVerbose(VB_NONE, "  -O [FILE]    : File to append log information to");
+  writeVerbose(VB_NONE, "  -o [FILE]    : File to append successful username/password pairs to");
   writeVerbose(VB_NONE, "  -e [n/s/ns]  : Additional password checks ([n] No Password, [s] Password = Username)");
   writeVerbose(VB_NONE, "  -M [TEXT]    : Name of the module to execute (without the .mod extension)");
   writeVerbose(VB_NONE, "  -m [TEXT]    : Parameter to pass to the module. This can be passed multiple times with a"); 
@@ -135,7 +138,7 @@ int checkOptions(int argc, char **argv, sAudit *_psAudit)
   if (nIgnoreBanner == 0)
     writeVerbose(VB_NONE, "%s v%s [%s] (C) %s %s\n", PROGRAM, VERSION, WWW, AUTHOR, EMAIL);
 
-  while ((opt = getopt(argc, argv, "h:H:u:U:p:P:C:O:e:M:m:g:r:R:c:t:T:n:bqdsLfFVv:w:Z:")) != EOF)
+  while ((opt = getopt(argc, argv, "h:H:u:U:p:P:C:O:o:e:M:m:g:r:R:c:t:T:n:bqdsLfFVv:w:Z:")) != EOF)
   {
     switch (opt)
     {
@@ -220,6 +223,9 @@ int checkOptions(int argc, char **argv, sAudit *_psAudit)
       break;
     case 'O':
       _psAudit->pOptOutput = strdup(optarg);
+      break;
+    case 'o':
+      _psAudit->pOptFoundOutput = strdup(optarg);
       break;
     case 'e':
       if (strcmp(optarg, "n") == 0)
@@ -1386,6 +1392,14 @@ void setPassResult(sLogin *_psLogin, char *_pPass)
     }
     else
       writeVerbose(VB_FOUND, "[%s] Host: %s User: %s Password: %s [SUCCESS]", _psLogin->psServer->psAudit->pModuleName, _psLogin->psServer->psHost->pHost, _psLogin->psUser->pUser, _pPass);
+
+    if (pFoundOutputFile != NULL)
+    {
+      pthread_mutex_lock(&ptmFoundFileMutex);
+      fprintf(pFoundOutputFile, "%s:%s:%s\n", _psLogin->psServer->psHost->pHost, _psLogin->psUser->pUser, _pPass);
+      fflush(pFoundOutputFile);
+      pthread_mutex_unlock(&ptmFoundFileMutex);
+    }
     
     _psLogin->psServer->psAudit->iValidPairFound = TRUE;
     _psLogin->psServer->iValidPairFound = TRUE;
@@ -2089,6 +2103,19 @@ int main(int argc, char **argv, char *envp[] __attribute__((unused)))
     }
   }
 
+  if (psAudit->pOptFoundOutput != NULL)
+  {
+    if ((pFoundOutputFile = fopen(psAudit->pOptFoundOutput, "a+")) == NULL)
+    {
+      writeError(ERR_FATAL, "Failed to open successful credential output file %s - %s", psAudit->pOptFoundOutput, strerror( errno ) );
+    }
+    else
+    {
+      if (pthread_mutex_init((&ptmFoundFileMutex), NULL) != 0)
+        writeError(ERR_FATAL, "Successful credential file mutex initialization failed - %s\n", strerror( errno ) );
+    }
+  }
+
   /* launch actually password auditing threads */
   if ( startServerThreadPool(psAudit) == SUCCESS )
   {
@@ -2116,9 +2143,18 @@ int main(int argc, char **argv, char *envp[] __attribute__((unused)))
   /* general memory clean-up */
   if ((psAudit->pOptOutput != NULL) && (pthread_mutex_destroy(&ptmFileMutex) != 0))
     writeError(ERR_FATAL, "File mutex destroy call failed - %s\n", strerror( errno ) );
+
+  if ((psAudit->pOptFoundOutput != NULL) && (pthread_mutex_destroy(&ptmFoundFileMutex) != 0))
+    writeError(ERR_FATAL, "Successful credential file mutex destroy call failed - %s\n", strerror( errno ) );
   
   if (pthread_mutex_destroy(&(psAudit->ptmMutex)) != 0)
     writeError(ERR_FATAL, "Audit mutex destroy call failed - %s\n", strerror( errno ) );
+
+  if (pOutputFile != NULL)
+    fclose(pOutputFile);
+
+  if (pFoundOutputFile != NULL)
+    fclose(pFoundOutputFile);
 
   free(psAudit->pPassFile);
   free(psAudit);

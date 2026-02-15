@@ -402,6 +402,7 @@ void response_callback(const char* name, int name_len, const char* instruction, 
   (void) instruction;
   (void) instruction_len;
   int i;
+  size_t nPassLen;
   char *pPass = ((_ssh2_session_data*)(*abstract))->pPass;
 
   if (((_ssh2_session_data*)(*abstract))->iAnswerCount > 0)
@@ -417,10 +418,11 @@ void response_callback(const char* name, int name_len, const char* instruction, 
       // https://trac.libssh2.org/changeset/fe3e23022b174b796b74afe5633796fc967e02e3/libssh2
       //if ( strcasestr(prompts[i].text, "Password:") != NULL ) {
       if ( ((strcasestr(prompts[i].text, "") != NULL ) && ((prompts[i].length == 9) || (prompts[i].length == 10)) ) || ( strcasestr(prompts[i].text, "Password:") != NULL ) ) {
-        responses[i].text = malloc( strlen(pPass) );
-        memset(responses[i].text, 0, strlen(pPass));
+        nPassLen = strlen(pPass);
+        responses[i].text = malloc(nPassLen + 1);
+        memset(responses[i].text, 0, nPassLen + 1);
         strcpy(responses[i].text, pPass);
-        responses[i].length = strlen(pPass);
+        responses[i].length = nPassLen;
         writeError(ERR_DEBUG_MODULE, "libssh2 response_callback set password response: %s", pPass);
         ((_ssh2_session_data*)(*abstract))->iAnswerCount++;
       }

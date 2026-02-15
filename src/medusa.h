@@ -214,6 +214,7 @@ typedef struct __sAudit {
   char *pOptPass;         // user specified password or password file
   char *pOptCombo;        // user specified combo host/username/password file
   char *pOptOutput;       // user specified output file
+  char *pOptFoundOutput;  // user specified successful credential output file
   char *pOptResume;       // user specified resume command
 
   char *pModuleName;      // current module name

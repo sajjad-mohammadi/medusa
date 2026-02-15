@@ -417,8 +417,8 @@ void response_callback(const char* name, int name_len, const char* instruction, 
       // https://trac.libssh2.org/changeset/fe3e23022b174b796b74afe5633796fc967e02e3/libssh2
       //if ( strcasestr(prompts[i].text, "Password:") != NULL ) {
       if ( ((strcasestr(prompts[i].text, "") != NULL ) && ((prompts[i].length == 9) || (prompts[i].length == 10)) ) || ( strcasestr(prompts[i].text, "Password:") != NULL ) ) {
-        responses[i].text = malloc( strlen(pPass) );
-        memset(responses[i].text, 0, strlen(pPass));
+        responses[i].text = malloc(strlen(pPass) + 1);
+        memset(responses[i].text, 0, strlen(pPass) + 1);
         strcpy(responses[i].text, pPass);
         responses[i].length = strlen(pPass);
         writeError(ERR_DEBUG_MODULE, "libssh2 response_callback set password response: %s", pPass);
@@ -438,6 +438,7 @@ int tryLogin(_SSH2_DATA* _psSessionData, LIBSSH2_SESSION *session, sLogin** psLo
   int iErrorMsg, iAuthMode, iRet;
   char *strtok_ptr = NULL;
   char *pAuth = NULL;
+  char *pAuthList = NULL;
 
   /*
     Password authentication failure delay: 2
@@ -455,7 +456,16 @@ int tryLogin(_SSH2_DATA* _psSessionData, LIBSSH2_SESSION *session, sLogin** psLo
   if (pErrorMsg)
   {
     writeError(ERR_DEBUG_MODULE, "Supported user-auth modes: %s.", pErrorMsg);
-    pAuth = strtok_r(pErrorMsg, ",", &strtok_ptr);
+    pAuthList = strdup(pErrorMsg);
+
+    if (pAuthList == NULL)
+    {
+      writeError(ERR_ERROR, "Failed to allocate memory for SSH auth mode parsing.");
+      (*psLogin)->iResult = LOGIN_RESULT_UNKNOWN;
+      return MSTATE_EXITING;
+    }
+
+    pAuth = strtok_r(pAuthList, ",", &strtok_ptr);
 
     while (pAuth) {
       if (strcmp(pAuth, "password") == 0) {
@@ -473,6 +483,8 @@ int tryLogin(_SSH2_DATA* _psSessionData, LIBSSH2_SESSION *session, sLogin** psLo
 
       pAuth = strtok_r(NULL, ",", &strtok_ptr);
     }
+
+    FREE(pAuthList);
   }
   else if (_psSessionData->iConnectionStatus == SSH_CONN_ESTABLISHED)
   {
